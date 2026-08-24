@@ -147,17 +147,13 @@ class _AddBusScreenState extends State<AddBusScreen> {
     }
   }
 
-  /// Parses a time string like "10:00 AM" back into a [TimeOfDay].
+  /// Parses a time string like "14:30" (24-hour format) back into a [TimeOfDay].
   TimeOfDay? _parseTimeString(String timeStr) {
     try {
-      final parts = timeStr.trim().split(' ');
+      final parts = timeStr.trim().split(':');
       if (parts.length != 2) return null;
-      final hm = parts[0].split(':');
-      int hour = int.parse(hm[0]);
-      final minute = int.parse(hm[1]);
-      final isPm = parts[1].toUpperCase() == 'PM';
-      if (isPm && hour != 12) hour += 12;
-      if (!isPm && hour == 12) hour = 0;
+      int hour = int.parse(parts[0]);
+      int minute = int.parse(parts[1]);
       return TimeOfDay(hour: hour, minute: minute);
     } catch (_) {
       return null;
@@ -182,7 +178,7 @@ class _AddBusScreenState extends State<AddBusScreen> {
   // ── Helpers ────────────────────────────────────────────────────────────────
 
   String get _formattedTime {
-    if (_selectedTime == null) return 'Select Departure Time';
+    if (_selectedTime == null) return 'Select Departure/Arrival Time';
     final hour = _selectedTime!.hourOfPeriod == 0
         ? 12
         : _selectedTime!.hourOfPeriod;

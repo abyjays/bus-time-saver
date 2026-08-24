@@ -10,6 +10,8 @@ import '../widgets/custom_fields.dart';
 import 'add_bus_screen.dart';
 import 'settings_screen.dart';
 import '../utils/app_updater.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -46,6 +48,15 @@ class _HomeScreenState extends State<HomeScreen> {
     FlutterNativeSplash.remove();
     // Seed the initial connectivity state, then listen for changes.
     _initConnectivity();
+    _checkAutoUpdate();
+  }
+
+  Future<void> _checkAutoUpdate() async {
+    final prefs = await SharedPreferences.getInstance();
+    final autoUpdate = prefs.getBool('auto_update') ?? true;
+    if (autoUpdate && mounted) {
+      AppUpdater.checkForAppUpdates(context, isAutomatic: true);
+    }
   }
 
   Future<void> _initConnectivity() async {
@@ -1189,8 +1200,19 @@ class _AppDrawer extends StatefulWidget {
 }
 
 class _AppDrawerState extends State<_AppDrawer> {
-  // 0 = Home (always active visually when drawer is open)
   int _selectedIndex = 0;
+  late Future<String> _appVersionFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _appVersionFuture = getAppVersion();
+  }
+
+  Future<String> getAppVersion() async {
+    final packageInfo = await PackageInfo.fromPlatform();
+    return packageInfo.version;
+  }
 
   void _showAboutDialog(BuildContext context) {
     final colorScheme = widget.colorScheme;
@@ -1233,13 +1255,18 @@ class _AppDrawerState extends State<_AppDrawer> {
                 color: colorScheme.primaryContainer,
                 borderRadius: BorderRadius.circular(20),
               ),
-              child: Text(
-                'Version 1.0.0',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: colorScheme.onPrimaryContainer,
-                ),
+              child: FutureBuilder<String>(
+                future: _appVersionFuture,
+                builder: (context, snapshot) {
+                  return Text(
+                    snapshot.hasData ? 'Version ${snapshot.data}' : 'Version...',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: colorScheme.onPrimaryContainer,
+                    ),
+                  );
+                }
               ),
             ),
             const SizedBox(height: 16),
@@ -1333,11 +1360,6 @@ class _AppDrawerState extends State<_AppDrawer> {
           setState(() => _selectedIndex = 0);
           Navigator.pop(context);
           _showAboutDialog(context);
-        } else if (index == 3) {
-          // Check for Updates - reset selection and call updater
-          setState(() => _selectedIndex = 0);
-          Navigator.pop(context);
-          AppUpdater.checkForAppUpdates(context);
         }
       },
       children: [
@@ -1367,12 +1389,17 @@ class _AppDrawerState extends State<_AppDrawer> {
                 ),
               ),
               const SizedBox(height: 2),
-              Text(
-                'Version 1.0',
-                style: TextStyle(
-                  fontSize: 14,
-                  color: colorScheme.onSurfaceVariant,
-                ),
+              FutureBuilder<String>(
+                future: _appVersionFuture,
+                builder: (context, snapshot) {
+                  return Text(
+                    snapshot.hasData ? 'Version ${snapshot.data}' : 'Version...',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                  );
+                }
               ),
             ],
           ),
@@ -1395,11 +1422,6 @@ class _AppDrawerState extends State<_AppDrawer> {
           icon: Icon(Icons.info_outline_rounded),
           selectedIcon: Icon(Icons.info_rounded),
           label: Text('About'),
-        ),
-        const NavigationDrawerDestination(
-          icon: Icon(Icons.system_update_rounded),
-          selectedIcon: Icon(Icons.system_update_rounded),
-          label: Text('Check for Updates'),
         ),
         // Removed illegal Spacer() here
         Padding(
@@ -1439,6 +1461,12 @@ void showBusDetailsSheet({
       final from = bus[DatabaseHelper.columnStartLocation] as String; 
       final to = bus[DatabaseHelper.columnDestination] as String; 
       final time = bus[DatabaseHelper.columnDepartureTime] as String; 
+      final faresRaw = bus[DatabaseHelper.columnFares] as String? ?? '[]';
+      List<Map<String, dynamic>> fares = [];
+      try {
+        final decoded = jsonDecode(faresRaw) as List<dynamic>;
+        fares = decoded.map((e) => e as Map<String, dynamic>).toList();
+      } catch (_) {}
       
       return Padding(
         padding: const EdgeInsets.all(24), 
@@ -1475,6 +1503,23 @@ void showBusDetailsSheet({
               ), 
               textAlign: TextAlign.center,
             ), 
+            if (fares.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 8,
+                runSpacing: 8,
+                children: fares.map((f) => Chip(
+                  label: Text('${f['type']}: ₹${f['fare']}'),
+                  backgroundColor: colorScheme.secondaryContainer,
+                  labelStyle: TextStyle(
+                    color: colorScheme.onSecondaryContainer, 
+                    fontWeight: FontWeight.w600,
+                  ),
+                  side: BorderSide.none,
+                )).toList(),
+              ),
+            ],
             const SizedBox(height: 32), 
             Row(
               children: [ 

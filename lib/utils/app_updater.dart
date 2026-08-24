@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:github_release_apk_updater/github_release_apk_updater.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 class AppUpdater {
   static void _showSnackBar(BuildContext context, String message, {bool isError = false}) {
@@ -19,11 +20,13 @@ class AppUpdater {
 
   /// Checks GitHub for a newer release of the app. Shows an update dialog if
   /// one is found, or a "you're up to date" snack-bar otherwise.
-  static Future<void> checkForAppUpdates(BuildContext context) async {
+  static Future<void> checkForAppUpdates(BuildContext context, {bool isAutomatic = false}) async {
     final colorScheme = Theme.of(context).colorScheme;
 
-    // Show a loading indicator while we fetch release metadata.
-    _showSnackBar(context, 'Checking for updates…');
+    if (!isAutomatic) {
+      // Show a loading indicator while we fetch release metadata.
+      _showSnackBar(context, 'Checking for updates…');
+    }
 
     try {
       // ── Step 1: fetch latest release metadata from GitHub ─────────────────
@@ -37,20 +40,23 @@ class AppUpdater {
       );
 
       if (release == null) {
-        if (context.mounted) {
+        if (context.mounted && !isAutomatic) {
           _showSnackBar(context, 'Could not reach GitHub. Check your connection.', isError: true);
         }
         return;
       }
 
       // ── Step 2: compare remote version with the installed version ─────────
-      final currentVersion = await pluginHelper.getCurrentAppVersion();
+      final packageInfo = await PackageInfo.fromPlatform();
+      final currentVersion = packageInfo.version;
       final hasUpdate = VersionComparator().isNewerVersion(release.version, currentVersion);
 
       if (!context.mounted) return;
 
       if (!hasUpdate) {
-        _showSnackBar(context, '✓ You are on the latest version.');
+        if (!isAutomatic) {
+          _showSnackBar(context, '✓ You are on the latest version.');
+        }
         return;
       }
 
@@ -65,6 +71,7 @@ class AppUpdater {
         barrierDismissible: false,
         builder: (dialogContext) => _UpdateDialog(
           latestTag: latestTag,
+          currentVersion: currentVersion,
           releaseNotes: releaseNotes,
           colorScheme: colorScheme,
           onUpdate: () async {
@@ -107,7 +114,7 @@ class AppUpdater {
         ),
       );
     } catch (e) {
-      if (context.mounted) {
+      if (context.mounted && !isAutomatic) {
         _showSnackBar(
           context,
           'Update check failed: $e',
@@ -121,12 +128,14 @@ class AppUpdater {
 class _UpdateDialog extends StatelessWidget {
   const _UpdateDialog({
     required this.latestTag,
+    required this.currentVersion,
     required this.releaseNotes,
     required this.colorScheme,
     required this.onUpdate,
   });
 
   final String latestTag;
+  final String currentVersion;
   final String releaseNotes;
   final ColorScheme colorScheme;
   final VoidCallback onUpdate;
@@ -158,7 +167,7 @@ class _UpdateDialog extends StatelessWidget {
                 borderRadius: BorderRadius.circular(8),
               ),
               child: Text(
-                'Version $latestTag',
+                'Version: $currentVersion -> $latestTag',
                 style: TextStyle(
                   fontWeight: FontWeight.w700,
                   color: colorScheme.onPrimaryContainer,
@@ -195,12 +204,12 @@ class _UpdateDialog extends StatelessWidget {
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Later'),
+          child: const Text('Cancel'),
         ),
         FilledButton.icon(
           onPressed: onUpdate,
           icon: const Icon(Icons.download_rounded, size: 18),
-          label: const Text('Update Now'),
+          label: const Text('Update'),
         ),
       ],
     );

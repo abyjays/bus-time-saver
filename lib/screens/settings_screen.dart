@@ -1,10 +1,39 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../main.dart' show BusTimeSaverApp;
 import '../utils/backup_helper.dart';
 import '../utils/app_updater.dart';
 
-class SettingsScreen extends StatelessWidget {
+class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  bool _autoUpdate = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAutoUpdatePref();
+  }
+
+  Future<void> _loadAutoUpdatePref() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _autoUpdate = prefs.getBool('auto_update') ?? true;
+    });
+  }
+
+  Future<void> _toggleAutoUpdate(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('auto_update', value);
+    setState(() {
+      _autoUpdate = value;
+    });
+  }
 
   void _showSnackBar(BuildContext context, String message,
       {bool isError = false}) {
@@ -255,11 +284,50 @@ class SettingsScreen extends StatelessWidget {
             color: colorScheme.surfaceContainerLow,
             child: Padding(
               padding: const EdgeInsets.symmetric(vertical: 4),
-              child: ListTile(
-                key: const Key('settings_check_update_tile'),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16),
-                ),
+              child: Column(
+                children: [
+                  SwitchListTile(
+                    key: const Key('settings_auto_update_tile'),
+                    secondary: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: colorScheme.secondaryContainer,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Icon(
+                        Icons.autorenew_rounded,
+                        color: colorScheme.onSecondaryContainer,
+                        size: 20,
+                      ),
+                    ),
+                    title: const Text(
+                      'Automatically check for updates',
+                      style: TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    subtitle: Text(
+                      'Check on app startup',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    value: _autoUpdate,
+                    onChanged: _toggleAutoUpdate,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                  ),
+                  Divider(
+                    height: 1,
+                    indent: 60,
+                    endIndent: 16,
+                    color: colorScheme.outlineVariant.withAlpha(80),
+                  ),
+                  ListTile(
+                    key: const Key('settings_check_update_tile'),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
                 leading: Container(
                   padding: const EdgeInsets.all(8),
                   decoration: BoxDecoration(
@@ -289,9 +357,11 @@ class SettingsScreen extends StatelessWidget {
                 ),
                 onTap: () => AppUpdater.checkForAppUpdates(context),
               ),
-            ),
+            ],
           ),
-        ],
+        ),
+      ),
+    ],
       ),
     );
   }
