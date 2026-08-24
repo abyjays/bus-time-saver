@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Defines the file paths that androidx.core.content.FileProvider is allowed
+    to expose to other apps (i.e. the system APK installer).
+
+    <external-files-path> maps to Context.getExternalFilesDir(), which is the
+    app-private external storage directory — no READ_EXTERNAL_STORAGE permission
+    is needed to write here, and the path is automatically cleaned up when the
+    app is uninstalled.
+-->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <external-files-path name="downloads" path="." />
+</paths>

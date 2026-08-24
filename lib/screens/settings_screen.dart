@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../main.dart' show BusTimeSaverApp;
 import '../utils/backup_helper.dart';
+import '../utils/app_updater.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -236,6 +237,60 @@ class SettingsScreen extends StatelessWidget {
               ),
             ),
           ),
+
+          const SizedBox(height: 24),
+
+          // ── Updates ─────────────────────────────────────────────────────
+          _SectionLabel(label: 'Updates', colorScheme: colorScheme),
+          const SizedBox(height: 8),
+          Card(
+            key: const Key('settings_updates_card'),
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: BorderSide(
+                color: colorScheme.outlineVariant.withAlpha(100),
+              ),
+            ),
+            color: colorScheme.surfaceContainerLow,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: ListTile(
+                key: const Key('settings_check_update_tile'),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: colorScheme.primaryContainer,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(
+                    Icons.system_update_rounded,
+                    color: colorScheme.onPrimaryContainer,
+                    size: 20,
+                  ),
+                ),
+                title: const Text(
+                  'Check for Updates',
+                  style: TextStyle(fontWeight: FontWeight.w600),
+                ),
+                subtitle: Text(
+                  'Download the latest version from GitHub',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                trailing: Icon(
+                  Icons.chevron_right_rounded,
+                  color: colorScheme.outlineVariant,
+                ),
+                onTap: () => AppUpdater.checkForAppUpdates(context),
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -268,3 +323,4 @@ class _SectionLabel extends StatelessWidget {
     );
   }
 }
+

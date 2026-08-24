@@ -33,38 +33,58 @@ class LiveLocationField extends StatefulWidget {
 }
 
 class _LiveLocationFieldState extends State<LiveLocationField> {
-  List<String> _liveSuggestions = [];
   Timer? _debounce;
   bool _loading = false;
+
+  // The live suggestions are kept here and are updated asynchronously.
+  // We notify the RawAutocomplete to rebuild by calling
+  // _optionsController.add(), which the optionsBuilder listens to.
+  final _optionsController = StreamController<List<String>>.broadcast();
+  List<String> _lastOptions = [];
 
   @override
   void dispose() {
     _debounce?.cancel();
+    _optionsController.close();
     super.dispose();
   }
 
-  void _onChanged(String value) {
-    _debounce?.cancel();
-    if (!widget.isOnline || value.trim().length < 2) {
-      setState(() {
-        _liveSuggestions = [];
-        _loading = false;
-      });
-      return;
+  Future<Iterable<String>> _fetchOptions(TextEditingValue textEditingValue) async {
+    final query = textEditingValue.text.trim();
+
+    if (query.isEmpty) {
+      return const [];
     }
-    setState(() => _loading = true);
-    _debounce = Timer(const Duration(milliseconds: 420), () async {
+
+    // Offline or query too short — use local suggestions.
+    if (!widget.isOnline || query.length < 2) {
+      final offline = widget.offlineSuggestions
+          .where((o) => o.toLowerCase().contains(query.toLowerCase()))
+          .toList();
+      debugPrint('Fetched suggestions count (offline): ${offline.length}');
+      return offline;
+    }
+
+    // Show loading indicator.
+    if (mounted) setState(() => _loading = true);
+
+    try {
       final results = await LocationService.fetchSuggestions(
-        value.trim(),
+        query,
         state: widget.stateHint,
       );
-      if (mounted) {
-        setState(() {
-          _liveSuggestions = results;
-          _loading = false;
-        });
-      }
-    });
+      debugPrint('Fetched suggestions count: ${results.length}');
+
+      // Merge live results with offline matches to ensure something always shows.
+      final offlineMatches = widget.offlineSuggestions
+          .where((o) => o.toLowerCase().contains(query.toLowerCase()))
+          .toList();
+      final merged = {...results, ...offlineMatches}.toList();
+
+      return merged;
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
   }
 
   InputDecoration _buildDecoration({bool showLoader = false}) {
@@ -118,21 +138,20 @@ class _LiveLocationFieldState extends State<LiveLocationField> {
 
   @override
   Widget build(BuildContext context) {
-    final effectiveSuggestions =
-        (widget.isOnline && _liveSuggestions.isNotEmpty)
-            ? _liveSuggestions
-            : widget.offlineSuggestions;
-
     return RawAutocomplete<String>(
       textEditingController: widget.controller,
       focusNode: widget.focusNode,
-      optionsBuilder: (TextEditingValue textEditingValue) {
-        if (textEditingValue.text.trim().isEmpty) {
-          return const Iterable<String>.empty();
-        }
-        return effectiveSuggestions.where((option) => option
-            .toLowerCase()
-            .contains(textEditingValue.text.toLowerCase()));
+      // This async optionsBuilder is the correct pattern for live fetching.
+      // RawAutocomplete calls it every time the text changes and rebuilds the
+      // overlay when the future completes.
+      optionsBuilder: (TextEditingValue textEditingValue) async {
+        final options = await _fetchOptions(textEditingValue);
+        _lastOptions = options.toList();
+        return _lastOptions;
+      },
+      onSelected: (String selection) {
+        widget.controller.text = selection;
+        debugPrint('Selected: $selection');
       },
       fieldViewBuilder: (BuildContext context,
           TextEditingController textEditingController,
@@ -143,55 +162,57 @@ class _LiveLocationFieldState extends State<LiveLocationField> {
           focusNode: focusNode,
           validator: widget.validator,
           textCapitalization: TextCapitalization.words,
-          onChanged: _onChanged,
           decoration: _buildDecoration(showLoader: _loading),
         );
       },
       optionsViewBuilder: (BuildContext context,
           AutocompleteOnSelected<String> onSelected,
           Iterable<String> options) {
+        if (options.isEmpty) return const SizedBox.shrink();
+
+        debugPrint('optionsViewBuilder rendering ${options.length} options');
+
         return Align(
           alignment: Alignment.topLeft,
           child: Material(
-            elevation: 4,
-            shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(14)),
-            child: SizedBox(
-              width: MediaQuery.of(context).size.width - 32,
-              child: ListView.builder(
-                padding: EdgeInsets.zero,
-                shrinkWrap: true,
-                itemCount: options.length,
-                itemBuilder: (BuildContext context, int index) {
-                  final String option = options.elementAt(index);
-                  return InkWell(
-                    onTap: () => onSelected(option),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 14),
-                      child: Row(
-                        children: [
-                          Icon(
-                            widget.isOnline && _liveSuggestions.isNotEmpty
-                                ? Icons.location_on_outlined
-                                : Icons.history_rounded,
-                            size: 16,
-                            color: widget.colorScheme.onSurfaceVariant,
+            elevation: 6,
+            borderRadius: BorderRadius.circular(14),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 240),
+              child: SizedBox(
+                width: MediaQuery.of(context).size.width - 32,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(14),
+                  child: ListView.separated(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    shrinkWrap: true,
+                    itemCount: options.length,
+                    separatorBuilder: (_, _) =>
+                        const Divider(height: 1, indent: 44),
+                    itemBuilder: (BuildContext context, int index) {
+                      final String option = options.elementAt(index);
+                      final bool isLive = !widget.offlineSuggestions.contains(option);
+                      return ListTile(
+                        dense: true,
+                        leading: Icon(
+                          isLive
+                              ? Icons.location_on_outlined
+                              : Icons.history_rounded,
+                          size: 18,
+                          color: widget.colorScheme.onSurfaceVariant,
+                        ),
+                        title: Text(
+                          option,
+                          style: TextStyle(
+                            color: widget.colorScheme.onSurface,
+                            fontSize: 14,
                           ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                              option,
-                              style: TextStyle(
-                                color: widget.colorScheme.onSurface,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-                },
+                        ),
+                        onTap: () => onSelected(option),
+                      );
+                    },
+                  ),
+                ),
               ),
             ),
           ),
@@ -232,11 +253,16 @@ class StyledAutocompleteField extends StatelessWidget {
         if (textEditingValue.text.isEmpty) {
           return const Iterable<String>.empty();
         }
-        return suggestions.where((String option) {
+        final results = suggestions.where((String option) {
           return option
               .toLowerCase()
               .contains(textEditingValue.text.toLowerCase());
         });
+        debugPrint('Fetched suggestions count (StyledAutocomplete): ${results.length}');
+        return results;
+      },
+      onSelected: (String selection) {
+        controller.text = selection;
       },
       fieldViewBuilder: (BuildContext context,
           TextEditingController textEditingController,
@@ -283,30 +309,46 @@ class StyledAutocompleteField extends StatelessWidget {
       optionsViewBuilder: (BuildContext context,
           AutocompleteOnSelected<String> onSelected,
           Iterable<String> options) {
+        if (options.isEmpty) return const SizedBox.shrink();
+
         return Align(
           alignment: Alignment.topLeft,
           child: Material(
-            elevation: 4,
-            shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(14)),
-            child: SizedBox(
-              width: MediaQuery.of(context).size.width - 32,
-              child: ListView.builder(
-                padding: const EdgeInsets.all(0),
-                shrinkWrap: true,
-                itemCount: options.length,
-                itemBuilder: (BuildContext context, int index) {
-                  final String option = options.elementAt(index);
-                  return InkWell(
-                    onTap: () {
-                      onSelected(option);
+            elevation: 6,
+            borderRadius: BorderRadius.circular(14),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 240),
+              child: SizedBox(
+                width: MediaQuery.of(context).size.width - 32,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(14),
+                  child: ListView.separated(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    shrinkWrap: true,
+                    itemCount: options.length,
+                    separatorBuilder: (_, _) =>
+                        const Divider(height: 1, indent: 44),
+                    itemBuilder: (BuildContext context, int index) {
+                      final String option = options.elementAt(index);
+                      return ListTile(
+                        dense: true,
+                        leading: Icon(
+                          Icons.history_rounded,
+                          size: 18,
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                        title: Text(
+                          option,
+                          style: TextStyle(
+                            color: colorScheme.onSurface,
+                            fontSize: 14,
+                          ),
+                        ),
+                        onTap: () => onSelected(option),
+                      );
                     },
-                    child: Padding(
-                      padding: const EdgeInsets.all(16.0),
-                      child: Text(option),
-                    ),
-                  );
-                },
+                  ),
+                ),
               ),
             ),
           ),

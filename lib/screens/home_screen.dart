@@ -9,6 +9,7 @@ import '../services/connectivity_service.dart';
 import '../widgets/custom_fields.dart';
 import 'add_bus_screen.dart';
 import 'settings_screen.dart';
+import '../utils/app_updater.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -418,19 +419,22 @@ class _HomeScreenState extends State<HomeScreen> {
           onPressed: () => _scaffoldKey.currentState?.openDrawer(),
         ),
         title: Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
             Icon(Icons.directions_bus_rounded,
                 color: colorScheme.primary, size: 26),
             const SizedBox(width: 8),
-            Text(
-              'Bus Time Saver',
-              style: TextStyle(
-                color: colorScheme.onSurface,
-                fontWeight: FontWeight.w700,
-                fontSize: 20,
-                letterSpacing: 0.3,
+            Flexible(
+              child: Text(
+                'Bus Time Saver',
+                style: TextStyle(
+                  color: colorScheme.onSurface,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 20,
+                  letterSpacing: 0.3,
+                ),
+                overflow: TextOverflow.ellipsis,
               ),
-              overflow: TextOverflow.ellipsis,
             ),
           ],
         ),
@@ -1329,6 +1333,11 @@ class _AppDrawerState extends State<_AppDrawer> {
           setState(() => _selectedIndex = 0);
           Navigator.pop(context);
           _showAboutDialog(context);
+        } else if (index == 3) {
+          // Check for Updates - reset selection and call updater
+          setState(() => _selectedIndex = 0);
+          Navigator.pop(context);
+          AppUpdater.checkForAppUpdates(context);
         }
       },
       children: [
@@ -1386,6 +1395,11 @@ class _AppDrawerState extends State<_AppDrawer> {
           icon: Icon(Icons.info_outline_rounded),
           selectedIcon: Icon(Icons.info_rounded),
           label: Text('About'),
+        ),
+        const NavigationDrawerDestination(
+          icon: Icon(Icons.system_update_rounded),
+          selectedIcon: Icon(Icons.system_update_rounded),
+          label: Text('Check for Updates'),
         ),
         // Removed illegal Spacer() here
         Padding(
