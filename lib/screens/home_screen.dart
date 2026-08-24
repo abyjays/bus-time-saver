@@ -1457,10 +1457,33 @@ void showBusDetailsSheet({
       borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
     ), 
     builder: (sheetContext) { 
+      String formatTimeStr(String? dbTimeStr) {
+        if (dbTimeStr == null || dbTimeStr.isEmpty) return '';
+        try {
+          final parts = dbTimeStr.split(':');
+          if (parts.length == 2) {
+            int h = int.parse(parts[0]);
+            final m = parts[1];
+            final period = h >= 12 ? 'PM' : 'AM';
+            if (h > 12) h -= 12;
+            if (h == 0) h = 12;
+            return '$h:$m $period';
+          }
+        } catch (_) {}
+        return dbTimeStr;
+      }
+
       final name = bus[DatabaseHelper.columnBusName] as String; 
       final from = bus[DatabaseHelper.columnStartLocation] as String; 
       final to = bus[DatabaseHelper.columnDestination] as String; 
-      final time = bus[DatabaseHelper.columnDepartureTime] as String; 
+      
+      final time = formatTimeStr(bus[DatabaseHelper.columnDepartureTime] as String?); 
+      final reachingTime = formatTimeStr(bus[DatabaseHelper.columnReachingTime] as String?);
+
+      String timeDisplay = time;
+      if (reachingTime.isNotEmpty) {
+        timeDisplay = '$time  ➔  Reaching: $reachingTime';
+      } 
       final faresRaw = bus[DatabaseHelper.columnFares] as String? ?? '[]';
       List<Map<String, dynamic>> fares = [];
       try {
@@ -1496,7 +1519,7 @@ void showBusDetailsSheet({
             ), 
             const SizedBox(height: 8), 
             Text(
-              '$from → $to  •  $time', 
+              '$from → $to  •  $timeDisplay', 
               style: TextStyle(
                 fontSize: 15, 
                 color: colorScheme.onSurfaceVariant,

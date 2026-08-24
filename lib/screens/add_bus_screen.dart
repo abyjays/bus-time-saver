@@ -68,6 +68,7 @@ class _AddBusScreenState extends State<AddBusScreen> {
 
   // ── State fields ──────────────────────────────────────────────────────────
   TimeOfDay? _selectedTime;
+  TimeOfDay? _selectedReachingTime;
   String _selectedFareType = _fareTypes.first;
   final List<Map<String, dynamic>> _fares = [];
   bool _isSaving = false;
@@ -130,6 +131,10 @@ class _AddBusScreenState extends State<AddBusScreen> {
         (data[DatabaseHelper.columnDepartureTime] as String?) ?? '';
     _selectedTime = _parseTimeString(timeStr);
 
+    final reachingStr =
+        (data[DatabaseHelper.columnReachingTime] as String?) ?? '';
+    _selectedReachingTime = _parseTimeString(reachingStr);
+
     // Parse stored fares JSON
     final faresRaw = (data[DatabaseHelper.columnFares] as String?) ?? '[]';
     try {
@@ -177,33 +182,46 @@ class _AddBusScreenState extends State<AddBusScreen> {
 
   // ── Helpers ────────────────────────────────────────────────────────────────
 
-  String get _formattedTime {
-    if (_selectedTime == null) return 'Select Departure/Arrival Time';
-    final hour = _selectedTime!.hourOfPeriod == 0
-        ? 12
-        : _selectedTime!.hourOfPeriod;
-    final minute = _selectedTime!.minute.toString().padLeft(2, '0');
-    final period = _selectedTime!.period == DayPeriod.am ? 'AM' : 'PM';
+  String _formatTime(TimeOfDay? time, String defaultText) {
+    if (time == null) return defaultText;
+    final hour = time.hourOfPeriod == 0 ? 12 : time.hourOfPeriod;
+    final minute = time.minute.toString().padLeft(2, '0');
+    final period = time.period == DayPeriod.am ? 'AM' : 'PM';
     return '$hour:$minute $period';
   }
 
-  String get _dbFormattedTime {
-    if (_selectedTime == null) return '';
-    final hour = _selectedTime!.hour.toString().padLeft(2, '0');
-    final minute = _selectedTime!.minute.toString().padLeft(2, '0');
+  String get _formattedTime => _formatTime(_selectedTime, 'Select Departure Time');
+  String get _formattedReachingTime => _formatTime(_selectedReachingTime, 'Select Reaching Time (Optional)');
+
+  String _dbFormatTime(TimeOfDay? time) {
+    if (time == null) return '';
+    final hour = time.hour.toString().padLeft(2, '0');
+    final minute = time.minute.toString().padLeft(2, '0');
     return '$hour:$minute';
   }
 
-  Future<void> _pickTime() async {
+  String get _dbFormattedTime => _dbFormatTime(_selectedTime);
+  String get _dbFormattedReachingTime => _dbFormatTime(_selectedReachingTime);
+
+  Future<void> _pickTime({bool isReachingTime = false}) async {
+    final initial = isReachingTime ? _selectedReachingTime : _selectedTime;
     final picked = await showTimePicker(
       context: context,
-      initialTime: _selectedTime ?? TimeOfDay.now(),
+      initialTime: initial ?? TimeOfDay.now(),
       builder: (context, child) => MediaQuery(
         data: MediaQuery.of(context).copyWith(alwaysUse24HourFormat: false),
         child: child!,
       ),
     );
-    if (picked != null) setState(() => _selectedTime = picked);
+    if (picked != null) {
+      setState(() {
+        if (isReachingTime) {
+          _selectedReachingTime = picked;
+        } else {
+          _selectedTime = picked;
+        }
+      });
+    }
   }
 
   void _addFare() {
@@ -265,6 +283,7 @@ class _AddBusScreenState extends State<AddBusScreen> {
         DatabaseHelper.columnStartLocation: _startLocationController.text,
         DatabaseHelper.columnDestination: _destinationController.text,
         DatabaseHelper.columnDepartureTime: _dbFormattedTime,
+        DatabaseHelper.columnReachingTime: _dbFormattedReachingTime,
         DatabaseHelper.columnFares: jsonEncode(_fares),
         DatabaseHelper.columnState: _stateController.text,
       };
@@ -429,16 +448,16 @@ class _AddBusScreenState extends State<AddBusScreen> {
             ),
             const SizedBox(height: 14),
 
-            // ── Departure time picker ──────────────────────────────────────────
+            // ── Schedule section ──────────────────────────────────────────
             _SectionHeader(
               icon: Icons.schedule_rounded,
-              label: 'Departure Time',
+              label: 'Schedule',
               colorScheme: colorScheme,
             ),
             const SizedBox(height: 12),
 
             InkWell(
-              onTap: _pickTime,
+              onTap: () => _pickTime(isReachingTime: false),
               borderRadius: BorderRadius.circular(14),
               child: Container(
                 padding: const EdgeInsets.symmetric(
@@ -478,7 +497,56 @@ class _AddBusScreenState extends State<AddBusScreen> {
                     ),
                     Icon(
                       Icons.chevron_right_rounded,
-                      color: colorScheme.onSurfaceVariant,
+                      color: colorScheme.onSurfaceVariant.withAlpha(150),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+
+            InkWell(
+              onTap: () => _pickTime(isReachingTime: true),
+              borderRadius: BorderRadius.circular(14),
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 16,
+                ),
+                decoration: BoxDecoration(
+                  color: colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: _selectedReachingTime != null
+                        ? colorScheme.primary
+                        : colorScheme.outline.withAlpha(100),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.flag_rounded,
+                      color: _selectedReachingTime != null
+                          ? colorScheme.primary
+                          : colorScheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        _formattedReachingTime,
+                        style: textTheme.bodyLarge?.copyWith(
+                          color: _selectedReachingTime != null
+                              ? colorScheme.onSurface
+                              : colorScheme.onSurfaceVariant,
+                          fontWeight: _selectedReachingTime != null
+                              ? FontWeight.w600
+                              : FontWeight.normal,
+                        ),
+                      ),
+                    ),
+                    Icon(
+                      Icons.chevron_right_rounded,
+                      color: colorScheme.onSurfaceVariant.withAlpha(150),
                     ),
                   ],
                 ),

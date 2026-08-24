@@ -16,7 +16,7 @@ class DatabaseHelper {
 
   // Database configuration
   static const String _databaseName = 'bus_time_saver.db';
-  static const int _databaseVersion = 4;
+  static const int _databaseVersion = 5;
 
   // Table name
   static const String tablesBuses = 'buses';
@@ -27,6 +27,7 @@ class DatabaseHelper {
   static const String columnStartLocation = 'start_location';
   static const String columnDestination = 'destination';
   static const String columnDepartureTime = 'departure_time';
+  static const String columnReachingTime = 'reaching_time';
   static const String columnFares = 'fares';
   static const String columnIsFavorite = 'is_favorite';
   static const String columnState = 'state';
@@ -97,6 +98,7 @@ class DatabaseHelper {
         $columnStartLocation TEXT    NOT NULL,
         $columnDestination   TEXT    NOT NULL,
         $columnDepartureTime TEXT    NOT NULL,
+        $columnReachingTime  TEXT,
         $columnFares         TEXT    NOT NULL,
         $columnIsFavorite    INTEGER NOT NULL DEFAULT 0,
         $columnState         TEXT    NOT NULL DEFAULT ''
@@ -116,6 +118,13 @@ class DatabaseHelper {
     if (oldVersion < 3) {
       await db.execute(
         "ALTER TABLE $tablesBuses ADD COLUMN $columnState TEXT NOT NULL DEFAULT ''",
+      );
+    }
+    // Version 4 changes handled (or no schema changes).
+    // Version 5: add the reaching_time column.
+    if (oldVersion < 5) {
+      await db.execute(
+        "ALTER TABLE $tablesBuses ADD COLUMN $columnReachingTime TEXT",
       );
     }
     // Version 4: migrate 12-hour AM/PM times to 24-hour HH:mm.

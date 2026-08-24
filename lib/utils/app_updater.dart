@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:github_release_apk_updater/github_release_apk_updater.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
+
 class AppUpdater {
   static void _showSnackBar(BuildContext context, String message, {bool isError = false}) {
     final colorScheme = Theme.of(context).colorScheme;
@@ -32,11 +33,13 @@ class AppUpdater {
       // ── Step 1: fetch latest release metadata from GitHub ─────────────────
       final apiService = GithubApiService();
       final pluginHelper = GithubReleaseApkUpdater();
+      final supportedAbis = await pluginHelper.getSupportedAbis();
 
       final release = await apiService.getLatestGithubAPKRelease(
         ownerGithub: 'abyjays',
         repositoryGithub: 'bus-time-saver',
         apkKeyName: 'app-release.apk',
+        supportedAbis: supportedAbis,
       );
 
       if (release == null) {
@@ -76,40 +79,7 @@ class AppUpdater {
           colorScheme: colorScheme,
           onUpdate: () async {
             Navigator.of(dialogContext).pop();
-            if (context.mounted) {
-              _showSnackBar(context, 'Downloading update…');
-            }
-            try {
-              // ── Step 3: download APK ────────────────────────────────────────
-              final downloader = ApkDownloaderService();
-              final filePath = await downloader.downloadAPK(
-                release.apkUrl,
-                null, // no auth token needed for public repo
-                null, // no progress callback
-              );
-
-              if (filePath == null) {
-                if (context.mounted) {
-                  _showSnackBar(
-                    context,
-                    'Download failed: could not save APK.',
-                    isError: true,
-                  );
-                }
-                return;
-              }
-
-              // ── Step 4: launch native Android installer ─────────────────────
-              await pluginHelper.installApk(filePath);
-            } catch (e) {
-              if (context.mounted) {
-                _showSnackBar(
-                  context,
-                  'Download failed: $e',
-                  isError: true,
-                );
-              }
-            }
+            _downloadAndInstallWithProgress(context, release.apkUrl, pluginHelper);
           },
         ),
       );
@@ -121,6 +91,87 @@ class AppUpdater {
           isError: true,
         );
       }
+    }
+  }
+
+  static void _downloadAndInstallWithProgress(BuildContext context, String apkUrl, GithubReleaseApkUpdater updater) async {
+    ValueNotifier<double> progressNotifier = ValueNotifier(0.0);
+    // Note: Dio cancel token can be used if your downloader supports it, or manage a cancellation flag:
+    bool isCancelled = false;
+    
+    // Show download progress dialog
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (progressContext) => PopScope(
+        canPop: false,
+        child: AlertDialog(
+          title: const Text('Downloading Update'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ValueListenableBuilder<double>(
+                valueListenable: progressNotifier,
+                builder: (context, value, _) => LinearProgressIndicator(value: value),
+              ),
+              const SizedBox(height: 16),
+              ValueListenableBuilder<double>(
+                valueListenable: progressNotifier,
+                builder: (context, value, _) => Text('${(value * 100).toStringAsFixed(0)}% downloaded'),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                isCancelled = true;
+                Navigator.pop(progressContext);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Download cancelled.')),
+                );
+              },
+              child: const Text('Cancel'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    try {
+      final downloader = ApkDownloaderService();
+      final filePath = await downloader.downloadAPK(
+        apkUrl,
+        null,
+        (received, total) {
+          if (!isCancelled && total != -1) {
+            progressNotifier.value = received / total;
+          }
+        },
+      );
+
+      if (isCancelled) return;
+
+      // Close progress dialog
+      if (context.mounted) Navigator.pop(context);
+
+      if (filePath != null) {
+        // Keep file available so Android system installer can read it safely, then trigger install
+        await updater.installApk(filePath);
+      } else {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Download failed. Please try again.')),
+          );
+        }
+      }
+    } catch (e) {
+      if (context.mounted) Navigator.pop(context); // Close dialog on error
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Download error. Check your internet connection.')),
+        );
+      }
+      debugPrint('Download error: $e');
     }
   }
 }
