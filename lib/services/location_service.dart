@@ -27,11 +27,13 @@ class LocationService {
       // Safely combine query with optional state. Ensure 'null' is never appended.
       final cleanQuery = query.trim();
       final cleanState = state.trim();
-      final searchText = cleanState.isNotEmpty && cleanState.toLowerCase() != 'null'
-          ? '$cleanQuery $cleanState'
-          : cleanQuery;
+      final hasStateFilter =
+          cleanState.isNotEmpty && cleanState.toLowerCase() != 'null';
 
-      final url = Uri.parse('$baseUrl?q=${Uri.encodeQueryComponent(searchText)}&limit=5');
+      // Append state to the search text to bias ranking toward the chosen region.
+      final searchText = hasStateFilter ? '$cleanQuery $cleanState' : cleanQuery;
+
+      final url = Uri.parse('$baseUrl?q=${Uri.encodeQueryComponent(searchText)}&limit=10');
       debugPrint('Requesting: $url');
       final response = await http.get(url, headers: {'User-Agent': 'BusTimeSaverApp/1.0'}).timeout(const Duration(seconds: 5));
 
@@ -47,20 +49,41 @@ class LocationService {
       final data = jsonDecode(response.body) as Map<String, dynamic>;
       final features = data['features'] as List<dynamic>? ?? [];
 
-      return features.map((f) {
-        final props = f['properties'] ?? {};
-        final name = props['name'] ?? props['city'] ?? 'Unknown location';
-        
+      final results = <String>{};
+      for (final f in features) {
+        final props = (f['properties'] ?? {}) as Map<String, dynamic>;
+
+        // ── State filter ──────────────────────────────────────────────────────
+        // When the caller has selected a specific state, only accept features
+        // whose 'state' property matches that state (case-insensitive).
+        // Features with no state info from the API are also excluded to prevent
+        // ambiguous cross-country results from slipping through.
+        if (hasStateFilter) {
+          final propState = (props['state'] ?? '').toString().trim();
+          if (propState.isEmpty ||
+              propState.toLowerCase() != cleanState.toLowerCase()) {
+            debugPrint(
+              '[LocationService] Skipping "${props['name']}" — state "$propState" != "$cleanState"',
+            );
+            continue;
+          }
+        }
+
+        final name = (props['name'] ?? props['city'] ?? 'Unknown location').toString();
         final propState = (props['state'] ?? '').toString().trim();
         final country = (props['country'] ?? '').toString().trim();
 
         // Build the display string, filtering out empty strings and duplicates
-        final parts = <String>[name.toString()];
+        final parts = <String>[name];
         if (propState.isNotEmpty && propState != name) parts.add(propState);
         if (country.isNotEmpty && parts.length < 3) parts.add(country);
 
-        return parts.join(', ');
-      }).where((name) => name.isNotEmpty).toSet().toList(); // toSet() to remove duplicates
+        final display = parts.join(', ');
+        if (display.isNotEmpty) results.add(display);
+      }
+
+      debugPrint('[LocationService] ${results.length} results after state filter (state: "$cleanState")');
+      return results.toList();
     } catch (e) {
       debugPrint('Location fetching error: $e');
       return [];

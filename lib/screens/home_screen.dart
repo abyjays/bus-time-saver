@@ -642,16 +642,47 @@ class _BusSearchBar extends StatefulWidget {
 }
 
 class _BusSearchBarState extends State<_BusSearchBar> {
-  /// Queries the DB based on the search text across multiple columns.
+  /// Queries the DB based on the search text across multiple columns,
+  /// then post-filters to also match intermediate stop names.
   Future<List<Map<String, dynamic>>> _searchBuses(String query) async {
     final db = await widget.dbHelper.database;
-    return db.query(
+    // SQL search: bus name, start location, destination, departure time
+    final sqlResults = await db.query(
       DatabaseHelper.tablesBuses,
       where:
-          '${DatabaseHelper.columnBusName} LIKE ? OR ${DatabaseHelper.columnDestination} LIKE ? OR ${DatabaseHelper.columnDepartureTime} LIKE ?',
-      whereArgs: ['%$query%', '%$query%', '%$query%'],
+          '${DatabaseHelper.columnBusName} LIKE ? OR '
+          '${DatabaseHelper.columnStartLocation} LIKE ? OR '
+          '${DatabaseHelper.columnDestination} LIKE ? OR '
+          '${DatabaseHelper.columnDepartureTime} LIKE ?',
+      whereArgs: ['%$query%', '%$query%', '%$query%', '%$query%'],
       orderBy: '${DatabaseHelper.columnBusName} ASC',
     );
+
+    // Also scan buses not already in results whose stops contain the query
+    final allBuses = await db.query(
+      DatabaseHelper.tablesBuses,
+      orderBy: '${DatabaseHelper.columnBusName} ASC',
+    );
+    final sqlIds = sqlResults
+        .map((b) => b[DatabaseHelper.columnId] as int)
+        .toSet();
+
+    final lowerQuery = query.toLowerCase();
+    final stopMatches = allBuses.where((bus) {
+      if (sqlIds.contains(bus[DatabaseHelper.columnId] as int)) return false;
+      final stopsRaw = bus[DatabaseHelper.columnStops] as String? ?? '[]';
+      try {
+        final decoded = jsonDecode(stopsRaw) as List<dynamic>;
+        return decoded.any((s) {
+          final name = (s as Map<String, dynamic>)['name'] as String? ?? '';
+          return name.toLowerCase().contains(lowerQuery);
+        });
+      } catch (_) {
+        return false;
+      }
+    }).toList();
+
+    return [...sqlResults, ...stopMatches];
   }
 
   @override
@@ -1442,6 +1473,101 @@ class _AppDrawerState extends State<_AppDrawer> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Route stop row — used in the bus details sheet route visualiser
+// ---------------------------------------------------------------------------
+
+class _RouteStopRow extends StatelessWidget {
+  const _RouteStopRow({
+    required this.icon,
+    required this.iconColor,
+    required this.label,
+    this.subLabel,
+    required this.colorScheme,
+    required this.isFirst,
+    required this.isLast,
+  });
+
+  final IconData icon;
+  final Color iconColor;
+  final String label;
+  final String? subLabel;
+  final ColorScheme colorScheme;
+  final bool isFirst;
+  final bool isLast;
+
+  @override
+  Widget build(BuildContext context) {
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // ── Left column: icon + connecting line ──────────────────────────
+          SizedBox(
+            width: 32,
+            child: Column(
+              children: [
+                Icon(icon, size: 20, color: iconColor),
+                if (!isLast)
+                  Expanded(
+                    child: Container(
+                      width: 2,
+                      margin: const EdgeInsets.symmetric(vertical: 2),
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [
+                            iconColor.withAlpha(160),
+                            iconColor.withAlpha(40),
+                          ],
+                        ),
+                        borderRadius: BorderRadius.circular(1),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          // ── Right column: label ──────────────────────────────────────────
+          Expanded(
+            child: Padding(
+              padding: EdgeInsets.only(
+                top: 2,
+                bottom: isLast ? 0 : 12,
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                      color: colorScheme.onSurface,
+                    ),
+                  ),
+                  if (subLabel != null) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      subLabel!,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 void showBusDetailsSheet({
   required BuildContext context, 
   required Map<String, dynamic> bus, 
@@ -1480,15 +1606,20 @@ void showBusDetailsSheet({
       final time = formatTimeStr(bus[DatabaseHelper.columnDepartureTime] as String?); 
       final reachingTime = formatTimeStr(bus[DatabaseHelper.columnReachingTime] as String?);
 
-      String timeDisplay = time;
-      if (reachingTime.isNotEmpty) {
-        timeDisplay = '$time  ➔  Reaching: $reachingTime';
-      } 
+
       final faresRaw = bus[DatabaseHelper.columnFares] as String? ?? '[]';
       List<Map<String, dynamic>> fares = [];
       try {
         final decoded = jsonDecode(faresRaw) as List<dynamic>;
         fares = decoded.map((e) => e as Map<String, dynamic>).toList();
+      } catch (_) {}
+
+      // Parse stops
+      final stopsRaw = bus[DatabaseHelper.columnStops] as String? ?? '[]';
+      List<Map<String, dynamic>> stops = [];
+      try {
+        final decoded = jsonDecode(stopsRaw) as List<dynamic>;
+        stops = decoded.map((e) => Map<String, dynamic>.from(e as Map)).toList();
       } catch (_) {}
       
       return Padding(
@@ -1517,15 +1648,67 @@ void showBusDetailsSheet({
               ), 
               textAlign: TextAlign.center,
             ), 
-            const SizedBox(height: 8), 
-            Text(
-              '$from → $to  •  $timeDisplay', 
-              style: TextStyle(
-                fontSize: 15, 
-                color: colorScheme.onSurfaceVariant,
-              ), 
-              textAlign: TextAlign.center,
-            ), 
+            const SizedBox(height: 16),
+
+            // ── Route visualiser ─────────────────────────────────────────────
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                color: colorScheme.surfaceContainerLow,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: colorScheme.outlineVariant.withAlpha(80),
+                ),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Start
+                  _RouteStopRow(
+                    icon: Icons.trip_origin_rounded,
+                    iconColor: colorScheme.primary,
+                    label: from,
+                    subLabel: time.isNotEmpty ? 'Dep. $time' : null,
+                    colorScheme: colorScheme,
+                    isFirst: true,
+                    isLast: stops.isEmpty,
+                  ),
+                  // Intermediate stops
+                  ...stops.asMap().entries.map((entry) {
+                    final i = entry.key;
+                    final stop = entry.value;
+                    final stopName = stop['name'] as String? ?? '';
+                    final stopType = stop['type'] as String? ?? 'Bus Stop';
+                    final isStand = stopType == 'Bus Stand';
+                    return _RouteStopRow(
+                      icon: isStand
+                          ? Icons.transfer_within_a_station_rounded
+                          : Icons.pin_drop_rounded,
+                      iconColor: isStand
+                          ? colorScheme.tertiary
+                          : colorScheme.secondary,
+                      label: stopName,
+                      subLabel: stopType,
+                      colorScheme: colorScheme,
+                      isFirst: false,
+                      isLast: i == stops.length - 1,
+                    );
+                  }),
+                  // Destination
+                  _RouteStopRow(
+                    icon: Icons.location_on_rounded,
+                    iconColor: colorScheme.error,
+                    label: to,
+                    subLabel: reachingTime.isNotEmpty ? 'Arr. $reachingTime' : null,
+                    colorScheme: colorScheme,
+                    isFirst: false,
+                    isLast: true,
+                  ),
+                ],
+              ),
+            ),
+
             if (fares.isNotEmpty) ...[
               const SizedBox(height: 16),
               Wrap(

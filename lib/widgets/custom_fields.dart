@@ -15,6 +15,9 @@ class LiveLocationField extends StatefulWidget {
     required this.stateHint,
     required this.offlineSuggestions,
     this.validator,
+    this.iconColor,
+    this.focusedBorderColor,
+    this.enabledBorderColor,
   });
 
   final TextEditingController controller;
@@ -27,6 +30,9 @@ class LiveLocationField extends StatefulWidget {
   final String stateHint;
   final List<String> offlineSuggestions;
   final String? Function(String?)? validator;
+  final Color? iconColor;
+  final Color? focusedBorderColor;
+  final Color? enabledBorderColor;
 
   @override
   State<LiveLocationField> createState() => _LiveLocationFieldState();
@@ -56,7 +62,10 @@ class _LiveLocationFieldState extends State<LiveLocationField> {
       return const [];
     }
 
-    // Offline or query too short — use local suggestions.
+    // Offline or query too short — use local DB-backed suggestions.
+    // Offline suggestions are plain place names (no state metadata), so they
+    // are filtered only by the query text. State-strict filtering applies only
+    // to live API results (handled inside LocationService.fetchSuggestions).
     if (!widget.isOnline || query.length < 2) {
       final offline = widget.offlineSuggestions
           .where((o) => o.toLowerCase().contains(query.toLowerCase()))
@@ -69,13 +78,17 @@ class _LiveLocationFieldState extends State<LiveLocationField> {
     if (mounted) setState(() => _loading = true);
 
     try {
+      // LocationService.fetchSuggestions strictly filters by [widget.stateHint]
+      // when it is non-empty, so live results are guaranteed to be within the
+      // selected state only.
       final results = await LocationService.fetchSuggestions(
         query,
         state: widget.stateHint,
       );
-      debugPrint('Fetched suggestions count: ${results.length}');
+      debugPrint('Fetched suggestions count (live, state: "${widget.stateHint}"): ${results.length}');
 
-      // Merge live results with offline matches to ensure something always shows.
+      // Merge live (state-filtered) results with offline DB matches.
+      // Offline suggestions are the user\'s own saved data and are always shown.
       final offlineMatches = widget.offlineSuggestions
           .where((o) => o.toLowerCase().contains(query.toLowerCase()))
           .toList();
@@ -88,10 +101,14 @@ class _LiveLocationFieldState extends State<LiveLocationField> {
   }
 
   InputDecoration _buildDecoration({bool showLoader = false}) {
+    final effectiveIconColor = widget.iconColor ?? widget.colorScheme.primary;
+    final effectiveFocusedBorderColor = widget.focusedBorderColor ?? widget.colorScheme.primary;
+    final effectiveEnabledBorderColor = widget.enabledBorderColor ?? widget.colorScheme.outline.withAlpha(100);
+
     return InputDecoration(
       labelText: widget.label,
       hintText: widget.hint,
-      prefixIcon: Icon(widget.icon, color: widget.colorScheme.primary),
+      prefixIcon: Icon(widget.icon, color: effectiveIconColor),
       suffixIcon: showLoader
           ? Padding(
               padding: const EdgeInsets.all(12),
@@ -100,7 +117,7 @@ class _LiveLocationFieldState extends State<LiveLocationField> {
                 height: 16,
                 child: CircularProgressIndicator(
                   strokeWidth: 2,
-                  color: widget.colorScheme.primary,
+                  color: effectiveIconColor,
                 ),
               ),
             )
@@ -114,12 +131,12 @@ class _LiveLocationFieldState extends State<LiveLocationField> {
       enabledBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(14),
         borderSide:
-            BorderSide(color: widget.colorScheme.outline.withAlpha(100)),
+            BorderSide(color: effectiveEnabledBorderColor),
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(14),
         borderSide:
-            BorderSide(color: widget.colorScheme.primary, width: 1.5),
+            BorderSide(color: effectiveFocusedBorderColor, width: 1.5),
       ),
       errorBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(14),

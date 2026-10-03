@@ -16,7 +16,7 @@ class DatabaseHelper {
 
   // Database configuration
   static const String _databaseName = 'bus_time_saver.db';
-  static const int _databaseVersion = 5;
+  static const int databaseVersion = 7;
 
   // Table name
   static const String tablesBuses = 'buses';
@@ -31,6 +31,9 @@ class DatabaseHelper {
   static const String columnFares = 'fares';
   static const String columnIsFavorite = 'is_favorite';
   static const String columnState = 'state';
+  static const String columnStops = 'stops';
+  static const String columnBusStop = 'bus_stop';
+  static const String columnBusStand = 'bus_stand';
 
   /// Returns the database instance, initializing it if necessary.
   Future<Database> get database async {
@@ -65,9 +68,9 @@ class DatabaseHelper {
       return await openDatabase(
         path,
         password: key,
-        version: _databaseVersion,
+        version: databaseVersion,
         onCreate: _onCreate,
-        onUpgrade: _onUpgrade,
+        onUpgrade: onUpgrade,
       );
     } catch (e) {
       if (e is DatabaseException) {
@@ -80,9 +83,9 @@ class DatabaseHelper {
         return await openDatabase(
           path,
           password: key,
-          version: _databaseVersion,
+          version: databaseVersion,
           onCreate: _onCreate,
-          onUpgrade: _onUpgrade,
+          onUpgrade: onUpgrade,
         );
       }
       rethrow;
@@ -101,32 +104,17 @@ class DatabaseHelper {
         $columnReachingTime  TEXT,
         $columnFares         TEXT    NOT NULL,
         $columnIsFavorite    INTEGER NOT NULL DEFAULT 0,
-        $columnState         TEXT    NOT NULL DEFAULT ''
+        $columnState         TEXT    NOT NULL DEFAULT '',
+        $columnStops         TEXT,
+        $columnBusStop       TEXT,
+        $columnBusStand      TEXT
       )
     ''');
   }
 
   /// Called when the database needs to be upgraded to a newer version.
-  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
-    // Version 2: add the is_favorite column (preserves existing data).
-    if (oldVersion < 2) {
-      await db.execute(
-        'ALTER TABLE $tablesBuses ADD COLUMN $columnIsFavorite INTEGER NOT NULL DEFAULT 0',
-      );
-    }
-    // Version 3: add the state column for location context.
-    if (oldVersion < 3) {
-      await db.execute(
-        "ALTER TABLE $tablesBuses ADD COLUMN $columnState TEXT NOT NULL DEFAULT ''",
-      );
-    }
-    // Version 4 changes handled (or no schema changes).
-    // Version 5: add the reaching_time column.
-    if (oldVersion < 5) {
-      await db.execute(
-        "ALTER TABLE $tablesBuses ADD COLUMN $columnReachingTime TEXT",
-      );
-    }
+  Future<void> onUpgrade(Database db, int oldVersion, int newVersion) async {
+    // 1. Data migrations
     // Version 4: migrate 12-hour AM/PM times to 24-hour HH:mm.
     if (oldVersion < 4) {
       final List<Map<String, dynamic>> allBuses = await db.query(tablesBuses);
@@ -155,6 +143,26 @@ class DatabaseHelper {
             }
           }
         }
+      }
+    }
+
+    // 2. Dynamic column addition for scalable schema upgrades
+    final tableInfo = await db.rawQuery("PRAGMA table_info('$tablesBuses')");
+    final existingColumns = tableInfo.map((col) => col['name'] as String).toList();
+
+    // Map of expected columns added after v1 and their SQL definitions
+    final expectedColumns = {
+      columnIsFavorite: 'INTEGER NOT NULL DEFAULT 0',
+      columnState: "TEXT NOT NULL DEFAULT ''",
+      columnReachingTime: 'TEXT',
+      columnStops: 'TEXT',
+      columnBusStop: 'TEXT',
+      columnBusStand: 'TEXT',
+    };
+
+    for (final entry in expectedColumns.entries) {
+      if (!existingColumns.contains(entry.key)) {
+        await db.execute('ALTER TABLE $tablesBuses ADD COLUMN ${entry.key} ${entry.value}');
       }
     }
   }

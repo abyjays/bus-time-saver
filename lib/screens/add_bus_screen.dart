@@ -73,6 +73,12 @@ class _AddBusScreenState extends State<AddBusScreen> {
   final List<Map<String, dynamic>> _fares = [];
   bool _isSaving = false;
 
+  // ── Intermediate stops ─────────────────────────────────────────────────────
+  /// Each entry: {'name': String, 'type': 'Bus Stop' | 'Bus Stand'}
+  final List<Map<String, dynamic>> _stops = [];
+  final List<TextEditingController> _stopControllers = [];
+  final List<FocusNode> _stopFocusNodes = [];
+
   /// Real-time online/offline flag used by location autocomplete.
   bool _isOnline = false;
   StreamSubscription<bool>? _connectivitySub;
@@ -150,6 +156,26 @@ class _AddBusScreenState extends State<AddBusScreen> {
     } catch (_) {
       // Fallback to empty list on error
     }
+
+    // Parse stored stops JSON
+    final stopsRaw = (data[DatabaseHelper.columnStops] as String?) ?? '[]';
+    try {
+      final decoded = jsonDecode(stopsRaw);
+      if (decoded is List) {
+        for (var item in decoded) {
+          if (item is Map) {
+            final stop = Map<String, dynamic>.from(item);
+            _stops.add(stop);
+            _stopControllers.add(
+              TextEditingController(text: stop['name'] as String? ?? ''),
+            );
+            _stopFocusNodes.add(FocusNode());
+          }
+        }
+      }
+    } catch (_) {
+      // Fallback to empty list on error
+    }
   }
 
   /// Parses a time string like "14:30" (24-hour format) back into a [TimeOfDay].
@@ -177,6 +203,12 @@ class _AddBusScreenState extends State<AddBusScreen> {
     _startLocationFocus.dispose();
     _destinationFocus.dispose();
     _stateFocus.dispose();
+    for (final c in _stopControllers) {
+      c.dispose();
+    }
+    for (final fn in _stopFocusNodes) {
+      fn.dispose();
+    }
     super.dispose();
   }
 
@@ -256,6 +288,47 @@ class _AddBusScreenState extends State<AddBusScreen> {
     setState(() => _fares.removeAt(index));
   }
 
+  // ── Stop helpers ───────────────────────────────────────────────────────────
+
+  void _showAddStopDialog() {
+    showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('Add Intermediate Stop'),
+        content: const Text('Choose the type of stop to add:'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, 'Bus Stop'),
+            child: const Text('Bus Stop'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, 'Bus Stand'),
+            child: const Text('Bus Stand'),
+          ),
+        ],
+      ),
+    ).then((type) {
+      if (type != null) {
+        setState(() {
+          _stops.add({'name': '', 'type': type});
+          _stopControllers.add(TextEditingController());
+          _stopFocusNodes.add(FocusNode());
+        });
+      }
+    });
+  }
+
+  void _removeStop(int index) {
+    setState(() {
+      _stops.removeAt(index);
+      _stopControllers[index].dispose();
+      _stopControllers.removeAt(index);
+      _stopFocusNodes[index].dispose();
+      _stopFocusNodes.removeAt(index);
+    });
+  }
+
   Future<void> _saveBus() async {
     // Sanitize text inputs: trim ends and collapse multiple internal spaces
     _busNameController.text =
@@ -278,6 +351,14 @@ class _AddBusScreenState extends State<AddBusScreen> {
 
     setState(() => _isSaving = true);
     try {
+      // Sync stop names from controllers back into _stops list
+      for (int i = 0; i < _stops.length; i++) {
+        _stops[i] = {
+          'name': _stopControllers[i].text.trim().replaceAll(RegExp(r'\s+'), ' '),
+          'type': _stops[i]['type'],
+        };
+      }
+
       final Map<String, dynamic> record = {
         DatabaseHelper.columnBusName: _busNameController.text,
         DatabaseHelper.columnStartLocation: _startLocationController.text,
@@ -286,6 +367,7 @@ class _AddBusScreenState extends State<AddBusScreen> {
         DatabaseHelper.columnReachingTime: _dbFormattedReachingTime,
         DatabaseHelper.columnFares: jsonEncode(_fares),
         DatabaseHelper.columnState: _stateController.text,
+        DatabaseHelper.columnStops: jsonEncode(_stops),
       };
 
       if (_isEditing) {
@@ -354,11 +436,18 @@ class _AddBusScreenState extends State<AddBusScreen> {
           ),
         ],
       ),
-      body: Form(
-        key: _formKey,
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 120),
-          children: [
+      body: GestureDetector(
+        // Tapping anywhere outside a text field drops focus, which causes
+        // RawAutocomplete to automatically close its overlay (it listens to
+        // the field's FocusNode). HitTestBehavior.opaque ensures the gesture
+        // is received even over transparent/empty areas of the scroll view.
+        behavior: HitTestBehavior.opaque,
+        onTap: () => FocusScope.of(context).unfocus(),
+        child: Form(
+          key: _formKey,
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 120),
+            children: [
             // ── Section: Bus Details ──────────────────────────────────────────
             _SectionHeader(
               icon: Icons.info_outline_rounded,
@@ -408,7 +497,9 @@ class _AddBusScreenState extends State<AddBusScreen> {
               }).toList(),
               onChanged: (val) {
                 if (val != null) {
-                  _stateController.text = val;
+                  setState(() {
+                    _stateController.text = val;
+                  });
                 }
               },
             ),
@@ -430,6 +521,94 @@ class _AddBusScreenState extends State<AddBusScreen> {
                   : null,
             ),
             const SizedBox(height: 16),
+
+            // ── Intermediate Stops ────────────────────────────────────────
+            _SectionHeader(
+              icon: Icons.route_rounded,
+              label: 'Intermediate Stops',
+              colorScheme: colorScheme,
+            ),
+            const SizedBox(height: 8),
+
+            // "Add Stop" button row
+            Row(
+              children: [
+                IconButton.filledTonal(
+                  onPressed: _showAddStopDialog,
+                  icon: const Icon(Icons.add_rounded),
+                  tooltip: 'Add Stop or Stand',
+                  style: IconButton.styleFrom(
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Text(
+                  _stops.isEmpty
+                      ? 'No intermediate stops added'
+                      : '${_stops.length} stop${_stops.length == 1 ? '' : 's'} added',
+                  style: textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+
+            // Per-stop fields
+            if (_stops.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              ...List.generate(_stops.length, (i) {
+                final stopType = _stops[i]['type'] as String;
+                final isStand = stopType == 'Bus Stand';
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Expanded(
+                        child: LiveLocationField(
+                          controller: _stopControllers[i],
+                          focusNode: _stopFocusNodes[i],
+                          label: stopType,
+                          hint: 'Enter $stopType name',
+                          icon: isStand
+                              ? Icons.transfer_within_a_station_rounded
+                              : Icons.pin_drop_rounded,
+                          iconColor: isStand
+                              ? colorScheme.tertiary
+                              : colorScheme.secondary,
+                          focusedBorderColor: isStand
+                              ? colorScheme.tertiary
+                              : colorScheme.secondary,
+                          enabledBorderColor: isStand
+                              ? colorScheme.tertiary.withAlpha(120)
+                              : colorScheme.secondary.withAlpha(120),
+                          colorScheme: colorScheme,
+                          isOnline: _isOnline,
+                          stateHint: _stateController.text,
+                          offlineSuggestions: _destinations,
+                          validator: (v) => (v == null || v.trim().isEmpty)
+                              ? '$stopType name is required'
+                              : null,
+                        ),
+                      ),
+                      IconButton(
+                        icon: Icon(
+                          Icons.remove_circle_outline_rounded,
+                          color: colorScheme.error,
+                          size: 20,
+                        ),
+                        tooltip: 'Remove stop',
+                        onPressed: () => _removeStop(i),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ],
+                  ),
+                );
+              }),
+            ],
+            const SizedBox(height: 8),
 
             // Destination — live autocomplete when online, DB fallback offline
             LiveLocationField(
@@ -682,7 +861,8 @@ class _AddBusScreenState extends State<AddBusScreen> {
                   onDelete: () => _removeFare(i),
                 );
               }),
-          ],
+            ],
+          ),
         ),
       ),
 

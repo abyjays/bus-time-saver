@@ -7,7 +7,7 @@ plugins {
 android {
     namespace = "com.example.bus_time_saver"
     compileSdk = 37
-    ndkVersion = flutter.ndkVersion
+    ndkVersion = "30.0.16248370"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
