@@ -16,7 +16,7 @@ if (keystorePropertiesFile.exists()) {
 
 android {
     namespace = "com.example.bus_time_saver"
-    compileSdk = 37
+    compileSdk = flutter.compileSdkVersion
     ndkVersion = "30.0.16248370"
 
     compileOptions {
