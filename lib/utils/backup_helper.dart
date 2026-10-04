@@ -1,5 +1,6 @@
 import 'dart:io';
-import 'package:sqflite_sqlcipher/sqflite.dart';
+import 'package:sqflite/sqflite.dart' show getDatabasesPath;
+import 'package:sqflite_sqlcipher/sqflite.dart' hide getDatabasesPath;
 
 import 'package:flutter/foundation.dart';
 import 'package:file_picker/file_picker.dart';
@@ -21,8 +22,8 @@ class BackupHelper {
 
   /// Returns the absolute path to the live database file.
   static Future<String> _dbPath() async {
-    final dir = await getApplicationDocumentsDirectory();
-    return p.join(dir.path, _dbFileName);
+    final dir = await getDatabasesPath();
+    return p.join(dir, _dbFileName);
   }
 
   // ---------------------------------------------------------------------------
