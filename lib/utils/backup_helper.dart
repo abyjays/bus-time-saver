@@ -29,34 +29,67 @@ class BackupHelper {
   // Backup
   // ---------------------------------------------------------------------------
 
-  /// Prompts the user to save the database file using the system file picker.
+  /// Exports an **unencrypted** plain-SQLite copy of the database so it can
+  /// survive an uninstall/reinstall (which wipes the secure-storage key).
+  ///
+  /// Strategy:
+  ///  1. Open the live encrypted DB in read-only mode.
+  ///  2. ATTACH a temporary file with an empty key (= no encryption).
+  ///  3. Run `sqlcipher_export('plaintext')` to copy all pages unencrypted.
+  ///  4. DETACH, share the plain file via the system share sheet.
+  ///  5. Delete the temp file in a finally block.
   ///
   /// Throws a [BackupException] on any failure.
   static Future<void> backupDatabase() async {
+    final tempDir = await getTemporaryDirectory();
+    final tempPath = p.join(tempDir.path, 'bus_time_saver_backup.db');
+    Database? encryptedDb;
+
     try {
-      // 1. Safely close the active database.
-      // This forces SQLite to checkpoint any pending Write-Ahead Logs (WAL)
-      // into the main .db file, ensuring the backup isn't corrupted or incomplete.
-      await DatabaseHelper().close();
+      // 1. Ensure a clean temp slot.
+      final tempFile = File(tempPath);
+      if (await tempFile.exists()) await tempFile.delete();
 
-      final path = await _dbPath();
-      final file = File(path);
-
-      if (!await file.exists()) {
-        throw BackupException(
+      final livePath = await _dbPath();
+      if (!await File(livePath).exists()) {
+        throw const BackupException(
           'Database file not found. Try adding a bus first.',
         );
       }
 
-      // 2. Export via System Share Sheet.
-      // We use share_plus instead of saving locally so the user can easily
-      // push it to Google Drive, Email, or scoped storage safely before uninstalling.
-      final xFile = XFile(path, mimeType: 'application/octet-stream');
-      
-      final result = await Share.shareXFiles(
-        [xFile],
-        subject: 'Bus Time Saver Backup',
-        text: 'Encrypted SQLCipher backup file for Bus Time Saver.',
+      // 2. Open the live encrypted DB (read-only so WAL is not disturbed).
+      final liveKey = await DatabaseHelper().getEncryptionKey();
+      encryptedDb = await openDatabase(
+        livePath,
+        password: liveKey,
+        singleInstance: false,
+        readOnly: true,
+      );
+
+      // 3. ATTACH an empty-keyed (plaintext) target file and export.
+      await encryptedDb.execute(
+        "ATTACH DATABASE ? AS plaintext KEY ''",
+        [tempPath],
+      );
+      await encryptedDb.execute("SELECT sqlcipher_export('plaintext')");
+      await encryptedDb.execute('DETACH DATABASE plaintext');
+
+      await encryptedDb.close();
+      encryptedDb = null;
+
+      if (!await tempFile.exists()) {
+        throw const BackupException('Export produced no output file.');
+      }
+
+      // 4. Share the plain SQLite file.
+      final xFile = XFile(tempPath, mimeType: 'application/octet-stream');
+      final result = await SharePlus.instance.share(
+        ShareParams(
+          files: [xFile],
+          subject: 'Bus Time Saver Backup',
+          text: 'Plain SQLite backup for Bus Time Saver. '
+              'Import this file to restore your data.',
+        ),
       );
 
       if (result.status == ShareResultStatus.dismissed) {
@@ -64,12 +97,20 @@ class BackupHelper {
       }
 
       if (kDebugMode) {
-        debugPrint('[BackupHelper] Shared backup file.');
+
+        debugPrint('[BackupHelper] Shared plain-SQLite backup: $tempPath');
       }
     } on BackupException {
       rethrow;
     } catch (e) {
       throw BackupException('Backup failed: $e');
+    } finally {
+      await encryptedDb?.close();
+      // 5. Best-effort cleanup of the temporary plaintext file.
+      try {
+        final tempFile = File(tempPath);
+        if (await tempFile.exists()) await tempFile.delete();
+      } catch (_) {}
     }
   }
 
@@ -78,13 +119,23 @@ class BackupHelper {
   // ---------------------------------------------------------------------------
 
   /// Opens a file picker so the user can select a `.db` backup file,
-  /// then copies it over the live database and resets the connection.
+  /// then absorbs the plain data into a freshly-encrypted database using
+  /// an ATTACH-based migration so the new installation's active key is used.
+  ///
+  /// Strategy:
+  ///  1. Pick the backup file (expected: plain, unencrypted SQLite).
+  ///  2. Close the singleton and delete the live DB (+ WAL/SHM siblings).
+  ///  3. Open a fresh encrypted DB with the current installation's key.
+  ///  4. ATTACH the plain backup file (KEY '' = no password).
+  ///  5. Optionally run schema migration on the backup before copying.
+  ///  6. Copy all rows via INSERT INTO … SELECT * FROM backup.
+  ///  7. DETACH, run integrity check, done.
   ///
   /// Returns `true` if the restore completed, `false` if the user cancelled.
   /// Throws a [BackupException] on any other failure.
   static Future<bool> restoreDatabase() async {
     try {
-      // 1. Let the user pick a single .db file (v12 API: FilePicker.pickFile)
+      // 1. Let the user pick a single .db file.
       final picked = await FilePicker.pickFile(
         dialogTitle: 'Select a Bus Time Saver backup (.db)',
         type: FileType.custom,
@@ -95,104 +146,127 @@ class BackupHelper {
 
       final pickedPath = picked.path;
       if (pickedPath == null) {
-        throw BackupException('Could not read the selected file path.');
+        throw const BackupException('Could not read the selected file path.');
       }
 
-      // 2. Copy the imported file to the active database path.
+      // 2. Close the active singleton connection and wipe the live DB so we
+      //    can build a fresh encrypted file from scratch.
       await DatabaseHelper().close();
       final destinationPath = await _dbPath();
-      final importedFile = File(pickedPath);
-      await importedFile.copy(destinationPath);
+      for (final suffix in ['', '-wal', '-shm']) {
+        final f = File('$destinationPath$suffix');
+        if (await f.exists()) await f.delete();
+      }
 
-      final key = await DatabaseHelper().getEncryptionKey();
-      Database? newDb;
+      // 3. Obtain the active key and open/create a fresh encrypted DB.
+      final liveKey = await DatabaseHelper().getEncryptionKey();
+      Database? newDb = await openDatabase(
+        destinationPath,
+        password: liveKey,
+        singleInstance: false,
+      );
 
       try {
-        // Attempt to open the database without a password
-        newDb = await openDatabase(
-          destinationPath,
-          singleInstance: false,
+        // 4. ATTACH the user-selected plain backup (no key).
+        await newDb.execute(
+          "ATTACH DATABASE ? AS backup KEY ''",
+          [pickedPath],
         );
-        // Test access
-        await newDb.rawQuery('SELECT count(*) FROM sqlite_master;');
-        
-        // If it opens successfully, it is a plain text database. 
-        // Immediately run PRAGMA rekey to encrypt it.
-        await newDb.execute("PRAGMA rekey = '$key';");
-        await newDb.close();
-        newDb = null;
 
-        // reopen the database normally with the password
-        newDb = await openDatabase(
-          destinationPath,
-          password: key,
-          singleInstance: false,
+        // Verify the backup contains the expected table before touching anything.
+        final tables = await newDb.rawQuery(
+          "SELECT name FROM backup.sqlite_master "
+          "WHERE type='table' AND name=?",
+          [DatabaseHelper.tablesBuses],
         );
-      } catch (e) {
-        // If opening without a password throws an exception, catch it 
-        // and try opening the database with the standard app password
-        await newDb?.close();
-        newDb = null;
-        
-        try {
-          newDb = await openDatabase(
-            destinationPath,
-            password: key,
-            singleInstance: false,
+        if (tables.isEmpty) {
+          await newDb.execute('DETACH DATABASE backup');
+          throw const BackupException(
+            'Backup file is missing required tables. '
+            'Is this a valid Bus Time Saver backup?',
           );
-          // Test access
-          await newDb.rawQuery('SELECT count(*) FROM sqlite_master;');
-        } catch (e2) {
-          await newDb?.close();
-          throw const BackupException('Invalid database format or wrong encryption key.');
-        }
-      }
-
-      try {
-        // Check and migrate legacy schema versions in the imported DB
-        final versionResult = await newDb.rawQuery('PRAGMA user_version;');
-        int importedVersion = 0;
-        if (versionResult.isNotEmpty) {
-          importedVersion = versionResult.first.values.first as int? ?? 0;
         }
 
-        final currentVersion = DatabaseHelper.databaseVersion;
-        if (importedVersion < currentVersion) {
-          if (kDebugMode) {
-            debugPrint('[BackupHelper] Upgrading imported DB from $importedVersion to $currentVersion');
-          }
-          await DatabaseHelper().onUpgrade(newDb, importedVersion, currentVersion);
-          await newDb.execute('PRAGMA user_version = $currentVersion;');
+        // 5. Discover which columns actually exist in the backup so that old
+        //    backups with fewer columns can be safely absorbed into the current
+        //    full schema (avoids column-count mismatch on INSERT … SELECT *).
+        final backupTableInfo = await newDb.rawQuery(
+          'PRAGMA backup.table_info(${DatabaseHelper.tablesBuses})',
+        );
+        final backupColumns =
+            backupTableInfo.map((r) => r['name'] as String).toList();
+
+        if (kDebugMode) {
+          debugPrint('[BackupHelper] Backup columns: $backupColumns');
         }
 
-        // Check integrity
+        // Ensure the target table exists in the fresh encrypted DB with the
+        // full current schema.
+        await newDb.execute('''
+          CREATE TABLE IF NOT EXISTS ${DatabaseHelper.tablesBuses} (
+            ${DatabaseHelper.columnId}            INTEGER PRIMARY KEY AUTOINCREMENT,
+            ${DatabaseHelper.columnBusName}       TEXT    NOT NULL,
+            ${DatabaseHelper.columnStartLocation} TEXT    NOT NULL,
+            ${DatabaseHelper.columnDestination}   TEXT    NOT NULL,
+            ${DatabaseHelper.columnDepartureTime} TEXT    NOT NULL,
+            ${DatabaseHelper.columnReachingTime}  TEXT,
+            ${DatabaseHelper.columnFares}         TEXT    NOT NULL,
+            ${DatabaseHelper.columnIsFavorite}    INTEGER NOT NULL DEFAULT 0,
+            ${DatabaseHelper.columnState}         TEXT    NOT NULL DEFAULT '',
+            ${DatabaseHelper.columnStops}         TEXT,
+            ${DatabaseHelper.columnBusStop}       TEXT,
+            ${DatabaseHelper.columnBusStand}      TEXT
+          )
+        ''');
+        // Clear any rows the openDatabase call might have created.
+        await newDb.delete(DatabaseHelper.tablesBuses);
+
+        // 6. Copy rows using an explicit column list so legacy backups with
+        //    fewer columns are handled gracefully — missing columns will
+        //    receive their DEFAULT values automatically.
+        final colList = backupColumns.join(', ');
+        await newDb.execute(
+          'INSERT INTO ${DatabaseHelper.tablesBuses} ($colList) '
+          'SELECT $colList FROM backup.${DatabaseHelper.tablesBuses}',
+        );
+
+        // Stamp the schema version on the live encrypted DB.
+        await newDb.execute(
+          'PRAGMA user_version = ${DatabaseHelper.databaseVersion};',
+        );
+
+        // 7. Detach the backup.
+        await newDb.execute('DETACH DATABASE backup');
+
+        // Integrity check on the newly populated encrypted DB.
         final integrityResult = await newDb.rawQuery('PRAGMA integrity_check;');
-        final isOk = integrityResult.isNotEmpty &&
+        final isOk =
+            integrityResult.isNotEmpty &&
             integrityResult.first.values.first.toString().toLowerCase() == 'ok';
-        
         if (!isOk) {
-          throw const BackupException('Backup file failed integrity check.');
+          throw const BackupException(
+            'Restored database failed integrity check.',
+          );
         }
 
-        // Check schema
-        final schemaResult = await newDb.rawQuery("PRAGMA table_info('${DatabaseHelper.tablesBuses}');");
-        final columns = schemaResult.map((row) => row['name'] as String).toList();
-        
-        if (!columns.contains(DatabaseHelper.columnBusName) ||
-            !columns.contains(DatabaseHelper.columnStartLocation) ||
-            !columns.contains(DatabaseHelper.columnDestination)) {
-          throw const BackupException('Backup file is missing required tables or columns.');
+        if (kDebugMode) {
+          debugPrint('[BackupHelper] Restore complete → $destinationPath');
         }
       } catch (e) {
-        if (e is BackupException) rethrow;
-        throw const BackupException('Validation failed.');
-      } finally {
         await newDb.close();
+        newDb = null;
+        // Roll back: delete the broken live file so the app can re-create it.
+        final broken = File(destinationPath);
+        if (await broken.exists()) await broken.delete();
+        // Surface downgrade errors with a dedicated typed exception so the UI
+        // can show an alert dialog instead of a generic snack bar.
+        if (e is DatabaseDowngradeException) throw BackupDowngradeException();
+        if (e is BackupException) rethrow;
+        throw BackupException('Migration failed: $e');
+      } finally {
+        await newDb?.close();
       }
 
-      if (kDebugMode) {
-        debugPrint('[BackupHelper] Restore complete → $destinationPath');
-      }
       return true;
     } on BackupException {
       rethrow;
@@ -203,7 +277,7 @@ class BackupHelper {
 }
 
 // ---------------------------------------------------------------------------
-// Custom exception
+// Custom exceptions
 // ---------------------------------------------------------------------------
 
 class BackupException implements Exception {
@@ -212,4 +286,15 @@ class BackupException implements Exception {
 
   @override
   String toString() => 'BackupException: $message';
+}
+
+/// A specialised [BackupException] thrown when the user attempts to import a
+/// backup whose schema version is newer than what this build of the app
+/// supports. The UI should present this as a blocking alert dialog, not a
+/// transient snack bar, because the fix requires the user to take an action
+/// (update the app) before retrying.
+class BackupDowngradeException extends BackupException {
+  BackupDowngradeException()
+      : super(DatabaseDowngradeException.downgradeMessage);
+
 }

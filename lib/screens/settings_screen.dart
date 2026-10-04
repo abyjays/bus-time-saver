@@ -53,6 +53,46 @@ class _SettingsScreenState extends State<SettingsScreen> {
       );
   }
 
+  /// Shows a modal [AlertDialog] for the case where a backup from a **newer**
+  /// app version is imported into this (older) installation. A transient snack
+  /// bar is not appropriate here because the user must take a deliberate action
+  /// (update the app) before the operation can succeed.
+  void _showDowngradeDialog(BuildContext context, String message) {
+    final colorScheme = Theme.of(context).colorScheme;
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        icon: Icon(
+          Icons.system_update_alt_rounded,
+          color: colorScheme.error,
+          size: 32,
+        ),
+        title: const Text(
+          'Update Required',
+          style: TextStyle(fontWeight: FontWeight.w700),
+        ),
+        content: Text(
+          message,
+          style: TextStyle(
+            color: colorScheme.onSurfaceVariant,
+            height: 1.5,
+          ),
+        ),
+        actions: [
+          FilledButton(
+            key: const Key('downgrade_dialog_ok_button'),
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
@@ -249,6 +289,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             context,
                             'Database restored. Restart the app to see changes.',
                           );
+                        }
+                      } on BackupDowngradeException catch (e) {
+                        // Show a blocking dialog — the user must update the
+                        // app before this backup can be imported.
+                        if (context.mounted) {
+                          _showDowngradeDialog(context, e.message);
                         }
                       } on BackupException catch (e) {
                         if (context.mounted) {

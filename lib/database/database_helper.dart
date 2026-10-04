@@ -71,8 +71,13 @@ class DatabaseHelper {
         version: databaseVersion,
         onCreate: _onCreate,
         onUpgrade: onUpgrade,
+        onDowngrade: _onDowngrade,
       );
     } catch (e) {
+      // Re-throw typed downgrade exceptions immediately — do not treat them
+      // as an unencrypted-DB fallback case.
+      if (e is DatabaseDowngradeException) rethrow;
+
       if (e is DatabaseException) {
         // Fallback: If an old, plain-text DB exists, SQLCipher will throw.
         // We delete the old unencrypted DB and create a new encrypted one.
@@ -86,6 +91,7 @@ class DatabaseHelper {
           version: databaseVersion,
           onCreate: _onCreate,
           onUpgrade: onUpgrade,
+          onDowngrade: _onDowngrade,
         );
       }
       rethrow;
@@ -305,4 +311,53 @@ class DatabaseHelper {
     await db.close();
     _database = null;
   }
+
+  /// Called when the on-disk database version is **newer** than the app's
+  /// [databaseVersion]. This happens when a backup from a newer app version
+  /// is restored into an older installation.
+  ///
+  /// Rather than silently corrupting data or crashing, we surface a clear,
+  /// typed exception so the UI can guide the user to update the app.
+  static Future<void> _onDowngrade(
+    Database db,
+    int oldVersion,
+    int newVersion,
+  ) async {
+    throw DatabaseDowngradeException(
+      onDiskVersion: oldVersion,
+      appVersion: newVersion,
+    );
+  }
 }
+
+// ---------------------------------------------------------------------------
+// Typed exception for schema downgrade
+// ---------------------------------------------------------------------------
+
+/// Thrown when the app attempts to open a database whose [onDiskVersion] is
+/// higher than the app's compiled [appVersion].
+///
+/// This typically means the user is trying to restore a backup that was
+/// created by a **newer** version of the app.
+class DatabaseDowngradeException implements Exception {
+  DatabaseDowngradeException({
+    required this.onDiskVersion,
+    required this.appVersion,
+  });
+
+  /// The schema version stored in the database file.
+  final int onDiskVersion;
+
+  /// The schema version this build of the app supports.
+  final int appVersion;
+
+  static const String downgradeMessage =
+      'This backup is from a newer version of the app. '
+      'Please update your app to import it.';
+
+  @override
+  String toString() =>
+      'DatabaseDowngradeException: on-disk v$onDiskVersion > app v$appVersion. '
+      '$downgradeMessage';
+}
+
