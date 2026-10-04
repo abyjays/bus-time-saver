@@ -2,7 +2,7 @@
 
 Bus Time Saver is a secure, efficient Flutter application designed to help users track, manage, and search for local bus routes, stops, and schedules. 
 
-## ✨ Key Features (v1.2.0)
+## ✨ Key Features (v1.1.0)
 
 * **Comprehensive Route Management:** Save and edit detailed bus routes, including Start Location, Destination, specific **Bus Stops**, and **Bus Stands**.
 * **Smart State-Filtered Search:** Autocomplete suggestions for locations are intelligently filtered based on the selected state, preventing irrelevant global search results.
@@ -16,7 +16,7 @@ Bus Time Saver is a secure, efficient Flutter application designed to help users
 ## 🚀 Installation (For Users)
 
 1. Navigate to the [Releases](../../releases) tab on this GitHub repository.
-2. Download the latest `app-release.apk` (Version 1.2.0 or higher).
+2. Download the latest `app-release.apk` (Version 1.1.0 or higher).
 3. Open the APK on your Android device to install. 
 4. *Note: Future updates will be handled automatically inside the app!*
 
